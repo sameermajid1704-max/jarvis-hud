@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#020914">
+<title>JARVIS — Optical HUD</title>
+<style>
+:root{color-scheme:dark;--cyan:#55eaff;--blue:#168bff}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;background:#020914;color:#d5faff;font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}
+body{overflow:hidden}
+#app{position:fixed;inset:0;overflow:hidden;background:radial-gradient(ellipse at center,#08203a,#020914 76%)}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;background:#020914}
+#video.active{display:block}
+#tint{position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,rgba(1,12,28,.46),transparent 22%,transparent 68%,rgba(1,12,28,.62))}
+#hud{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.topbar{position:absolute;top:max(12px,env(safe-area-inset-top));left:16px;right:16px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start;text-transform:uppercase;letter-spacing:.16em;font-size:11px;text-shadow:0 0 12px #168bff}
+.brand{font-weight:800;font-size:15px;letter-spacing:.24em}.sub{color:#7edfff;margin-top:4px;font-size:9px;letter-spacing:.18em}
+.status{text-align:right;color:#8ff8ff}.pill{display:inline-block;border:1px solid rgba(85,234,255,.55);padding:5px 8px;border-radius:3px;background:rgba(2,18,36,.55)}
+.readout{position:absolute;left:16px;top:27%;width:min(36vw,180px);font-size:10px;line-height:1.65;letter-spacing:.12em;color:#8deeff;text-shadow:0 0 8px #168bff}
+.readout.right{left:auto;right:16px;text-align:right}.line{height:1px;background:linear-gradient(90deg,var(--cyan),transparent);margin:6px 0;opacity:.8}.right .line{background:linear-gradient(270deg,var(--cyan),transparent)}
+.bottom{position:absolute;bottom:max(12px,env(safe-area-inset-bottom));left:14px;right:14px;display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap}
+button{color:#d7fbff;background:rgba(3,22,42,.92);border:1px solid rgba(85,234,255,.7);padding:12px 17px;border-radius:4px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:11px;cursor:pointer;box-shadow:0 0 15px rgba(22,139,255,.14),inset 0 0 12px rgba(22,139,255,.08)}
+button:active{background:#0b3452}button.primary{background:rgba(5,92,135,.88)}button:disabled{opacity:.45;cursor:not-allowed}
+#message{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(88vw,440px);padding:22px;text-align:center;background:rgba(2,12,26,.91);border:1px solid rgba(85,234,255,.5);box-shadow:0 0 30px rgba(22,139,255,.15)}
+#message h1{margin:0 0 10px;font-size:18px;letter-spacing:.16em}#message p{color:#a9dbe9;font-size:13px;line-height:1.55;margin:0 0 15px}
+#error{color:#ffc6a8;font-size:12px;line-height:1.5;margin-top:10px}.hide{display:none!important}
+#note{position:absolute;left:50%;top:calc(50% + 110px);transform:translateX(-50%);font-size:10px;color:#8acfe1;text-align:center;width:85%;letter-spacing:.08em}
+@media(max-width:520px){.readout{font-size:8px;width:30vw;top:25%}.brand{font-size:13px}.bottom{gap:7px}button{padding:11px 12px;font-size:10px}}
+</style>
+</head>
+<body>
+<div id="app">
+  <video id="video" autoplay playsinline muted></video>
+  <div id="tint"></div>
+  <canvas id="hud" aria-hidden="true"></canvas>
+  <div class="topbar">
+    <div><div class="brand">J.A.R.V.I.S.</div><div class="sub">Augmented Reality Interface</div></div>
+    <div class="status"><span class="pill" id="status">SYSTEM STANDBY</span><div class="sub" id="clock">LOCAL TIME --:--:--</div></div>
+  </div>
+  <div class="readout">
+    <div>ENVIRONMENT SCAN</div><div class="line"></div>
+    OPTICAL FEED <span id="feedState">OFFLINE</span><br>
+    HUD OVERLAY <span>ACTIVE</span><br>
+    TRACKING <span id="trackState">IDLE</span><br>
+    <div class="line"></div>
+    <span id="coords">X 000 / Y 000</span><br>
+    SENSOR ARRAY: READY
+  </div>
+  <div class="readout right">
+    <div>JARVIS CORE</div><div class="line"></div>
+    POWER <span>100%</span><br>
+    LINK <span id="linkState">WAITING</span><br>
+    MODE <span>VISUAL</span><br>
+    <div class="line"></div>
+    <span id="fps">SCAN: STANDBY</span><br>
+    PROJECTION: SIMULATED
+  </div>
+  <div id="message">
+    <h1>JARVIS ONLINE?</h1>
+    <p>Start the front camera to place a blue Iron Man–inspired HUD over the live view. This is a visual simulation, not a genuinely transparent screen.</p>
+    <button class="primary" id="start">Start front camera</button>
+    <div id="error" role="status"></div>
+  </div>
+  <div id="note">CAMERA VIEW + DIGITAL GRAPHICS · NOT A REAL TRANSPARENT DISPLAY</div>
+  <div class="bottom">
+    <button class="primary" id="startBottom">Start camera</button>
+    <button id="stop" disabled>Stop camera</button>
+    <button id="toggleHud">Hide HUD</button>
+    <button id="fullscreen">Full screen</button>
+  </div>
+</div>
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('hud');
+  const ctx = canvas.getContext('2d');
+  const message = document.getElementById('message');
+  const errorBox = document.getElementById('error');
+  const startBtn = document.getElementById('start');
+  const startBottom = document.getElementById('startBottom');
+  const stopBtn = document.getElementById('stop');
+  const toggleBtn = document.getElementById('toggleHud');
+  const fullscreenBtn = document.getElementById('fullscreen');
+  let stream = null, hudVisible = true, raf = 0, startedAt = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function setStatus(active) {
+    document.getElementById('status').textContent = active ? 'OPTICAL FEED ACTIVE' : 'SYSTEM STANDBY';
+    document.getElementById('feedState').textContent = active ? 'ONLINE' : 'OFFLINE';
+    document.getElementById('trackState').textContent = active ? 'SCANNING' : 'IDLE';
+    document.getElementById('linkState').textContent = active ? 'CONNECTED' : 'WAITING';
+    document.getElementById('fps').textContent = active ? 'SCAN: RUNNING' : 'SCAN: STANDBY';
+    startBtn.disabled = active; startBottom.disabled = active; stopBtn.disabled = !active;
+  }
+  async function startCamera() {
+    errorBox.textContent = '';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      errorBox.textContent = 'Camera access is unavailable here. Open this page using HTTPS or localhost in a current browser.';
+      return;
+    }
+    try {
+      if (stream) stopCamera();
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      video.srcObject = stream;
+      await video.play();
+      video.classList.add('active');
+      message.classList.add('hide');
+      document.getElementById('note').classList.add('hide');
+      startedAt = performance.now();
+      setStatus(true);
+      draw();
+    } catch (err) {
+      let msg = 'Could not start the camera. ';
+      if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+        msg += 'Camera permission was denied. Allow camera access in your browser settings, then try again.';
+      } else if (err && (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError')) {
+        msg += 'No compatible camera was found.';
+      } else if (err && err.name === 'NotReadableError') {
+        msg += 'The camera may already be in use by another app. Close that app and retry.';
+      } else {
+        msg += 'Use HTTPS or localhost and check that your browser has camera permission. (' + (err?.name || 'unknown error') + ')';
+      }
+      errorBox.textContent = msg;
+      setStatus(false);
+    }
+  }
+  function stopCamera() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null;
+    video.pause();
+    video.srcObject = null;
+    video.classList.remove('active');
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    message.classList.remove('hide');
+    document.getElementById('note').classList.remove('hide');
+    errorBox.textContent = '';
+    setStatus(false);
+  }
+  function glow(color, width=1.5) {
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.shadowColor = color; ctx.shadowBlur = 12;
+  }
+  function ring(x,y,r,start,end,color,width=1.5) {
+    glow(color,width); ctx.beginPath(); ctx.arc(x,y,r,start,end); ctx.stroke(); ctx.shadowBlur = 0;
+  }
+  function draw() {
+    if (!stream) return;
+    const w = innerWidth, h = innerHeight, t = (performance.now() - startedAt) / 1000;
+    ctx.clearRect(0,0,w,h);
+    if (hudVisible) {
+      const cx = w * .5, cy = h * .51, base = Math.min(w,h) * .19;
+      const cyan = 'rgba(85,234,255,.9)', blue = 'rgba(22,139,255,.82)', faint = 'rgba(85,234,255,.32)';
+      // Central targeting rings
+      ring(cx,cy,base,0,Math.PI*2,faint,1);
+      ring(cx,cy,base*.83,t*.32,t*.32+Math.PI*1.48,cyan,2);
+      ring(cx,cy,base*.68,-t*.5,-t*.5+Math.PI*1.1,blue,2);
+      ring(cx,cy,base*1.12,t*.18,t*.18+Math.PI*.42,cyan,2);
+      ring(cx,cy,base*1.12,Math.PI+t*.18,Math.PI+t*.18+Math.PI*.42,cyan,2);
+      ring(cx,cy,base*.48,0,Math.PI*2,faint,1);
+      // Rotating ticks
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(t*.22); glow(cyan,1.2);
+      for(let i=0;i<48;i++){const a=i*Math.PI*2/48;const r1=base*1.18,r2=r1+(i%4===0?12:5);ctx.beginPath();ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2);ctx.stroke();}
+      ctx.restore(); ctx.shadowBlur=0;
+      // Crosshair
+      glow(cyan,1); ctx.beginPath();ctx.moveTo(cx-base*1.42,cy);ctx.lineTo(cx-base*1.18,cy);ctx.moveTo(cx+base*1.18,cy);ctx.lineTo(cx+base*1.42,cy);ctx.moveTo(cx,cy-base*1.42);ctx.lineTo(cx,cy-base*1.18);ctx.moveTo(cx,cy+base*1.18);ctx.lineTo(cx,cy+base*1.42);ctx.stroke();ctx.shadowBlur=0;
+      // Moving scan line
+      const sy = h*.2 + ((t*95)%(h*.6));
+      const grad = ctx.createLinearGradient(0,sy-18,0,sy+18);grad.addColorStop(0,'rgba(85,234,255,0)');grad.addColorStop(.5,'rgba(85,234,255,.23)');grad.addColorStop(1,'rgba(85,234,255,0)');
+      ctx.fillStyle=grad;ctx.fillRect(0,sy-18,w,36);
+      glow('rgba(85,234,255,.7)',1);ctx.beginPath();ctx.moveTo(w*.08,sy);ctx.lineTo(w*.32,sy);ctx.moveTo(w*.68,sy);ctx.lineTo(w*.92,sy);ctx.stroke();ctx.shadowBlur=0;
+      // Corner brackets
+      const m=18, len=Math.min(42,w*.1), bh=Math.min(42,h*.08);
+      glow('rgba(85,234,255,.72)',1.5);
+      [[m,m,1,1],[w-m,m,-1,1],[m,h-m,1,-1],[w-m,h-m,-1,-1]].forEach(([x,y,sx,sy2])=>{ctx.beginPath();ctx.moveTo(x+sx*len,y);ctx.lineTo(x,y);ctx.lineTo(x,y+sy2*bh);ctx.stroke();});
+      ctx.shadowBlur=0;
+      document.getElementById('coords').textContent = 'X ' + String(Math.round(cx)).padStart(3,'0') + ' / Y ' + String(Math.round(cy)).padStart(3,'0');
+    }
+    document.getElementById('clock').textContent = 'LOCAL TIME ' + new Date().toLocaleTimeString();
+    raf = requestAnimationFrame(draw);
+  }
+  startBtn.addEventListener('click', startCamera);
+  startBottom.addEventListener('click', startCamera);
+  stopBtn.addEventListener('click', stopCamera);
+  toggleBtn.addEventListener('click', () => { hudVisible = !hudVisible; toggleBtn.textContent = hudVisible ? 'Hide HUD' : 'Show HUD'; });
+  fullscreenBtn.addEventListener('click', async () => {
+    try {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch (_) { errorBox.textContent = 'Full screen is unavailable in this browser. You can still use the HUD normally.'; }
+  });
+  window.addEventListener('pagehide', stopCamera);
+  setStatus(false);
+})();
+</script>
+</body>
+</html>
